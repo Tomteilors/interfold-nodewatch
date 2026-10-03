@@ -6,6 +6,7 @@ import { fetchFullStatus } from '../core/status.js';
 import { fetchLatestRelease, getLocalVersion } from '../core/release.js';
 import { isNewer } from '../core/semver.js';
 import { createMetrics } from '../metrics/registry.js';
+import { probePeers } from '../core/peerHealth.js';
 
 export interface ExporterCommandOptions {
   operator?: string;
@@ -13,6 +14,8 @@ export interface ExporterCommandOptions {
   rpcUrl?: string;
   chain?: string;
   releaseCheckInterval?: string;
+  /** Read the local ciphernode journal for peer health alongside the chain. */
+  local?: boolean;
 }
 
 export async function runExporter(options: ExporterCommandOptions): Promise<void> {
@@ -32,6 +35,9 @@ export async function runExporter(options: ExporterCommandOptions): Promise<void
     try {
       const report = await fetchFullStatus(client, addresses, operator, config.chain);
       metrics.update(report);
+      if (options.local) {
+        metrics.updatePeers(await probePeers(config.nodeUnit, config.logWindowMinutes));
+      }
     } catch (err) {
       metrics.markRpcDown();
       console.error('[exporter] refresh failed:', err instanceof Error ? err.message : err);

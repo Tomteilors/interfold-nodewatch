@@ -11,7 +11,7 @@ const program = new Command();
 program
   .name('nodewatch')
   .description('Status, watch, Prometheus exporter and E3 inspector for Interfold ciphernode operators')
-  .version('0.1.0');
+  .version('0.2.0');
 
 program
   .command('status')
@@ -20,6 +20,7 @@ program
   .option('--json', 'print machine-readable JSON instead of a table')
   .option('--rpc-url <url>', 'JSON-RPC HTTP URL (defaults to RPC_URL env)')
   .option('--chain <name>', 'mainnet | sepolia (defaults to CHAIN env)')
+  .option('--local', 'also read the ciphernode journal and report peer-layer health')
   .action(async (opts) => {
     await runStatus(opts);
   });
@@ -32,7 +33,10 @@ program
   .option('--rpc-url <url>', 'JSON-RPC HTTP URL (defaults to RPC_URL env)')
   .option('--chain <name>', 'mainnet | sepolia (defaults to CHAIN env)')
   .option('--state <path>', 'state file path (default ./state.json)')
-  .option('--local', 'also run `interfold ciphernode status` and cross-check it against the chain')
+  .option(
+    '--local',
+    'also read the ciphernode journal: peer-layer health every tick, plus `interfold ciphernode status` cross-checked against the chain',
+  )
   .option(
     '--local-check-interval <minutes>',
     'how often --local runs the status command (it makes several RPC calls; default 10)',
@@ -57,6 +61,7 @@ program
     '--release-check-interval <minutes>',
     'how often to check for a new interfold release (defaults to RELEASE_CHECK_MINUTES env, then 60)',
   )
+  .option('--local', 'also export peer-layer metrics read from the ciphernode journal')
   .action(async (opts) => {
     await runExporter(opts);
   });

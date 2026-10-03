@@ -6,6 +6,7 @@ import { loadState, saveState } from '../core/state.js';
 import { diffSnapshots, rpcFailureAlert, type Alert, type WatchSnapshot } from '../core/alerts.js';
 import { scanEventAlerts } from '../core/events.js';
 import { isLocalCheckDue, localProblemAlerts, probeLocal } from '../core/localCheck.js';
+import { peerAlerts, probePeers, type PeerVerdict } from '../core/peerHealth.js';
 import { fetchLatestRelease, getLocalVersion } from '../core/release.js';
 import { checkNewReleaseAlert, checkUpdateAvailableAlert } from '../core/releaseAlerts.js';
 import { sendTelegramMessage } from '../notify/telegram.js';
@@ -34,6 +35,7 @@ interface SnapshotFields {
   releaseLastCheckedAt: string | null;
   localLastCheckedAt?: string | null;
   localLastProblem?: string | null;
+  peerVerdict?: PeerVerdict | null;
 }
 
 function toSnapshot(fields: SnapshotFields): WatchSnapshot {
@@ -52,6 +54,7 @@ function toSnapshot(fields: SnapshotFields): WatchSnapshot {
     releaseLastCheckedAt: fields.releaseLastCheckedAt,
     localLastCheckedAt: fields.localLastCheckedAt ?? null,
     localLastProblem: fields.localLastProblem ?? null,
+    peerVerdict: fields.peerVerdict ?? null,
   };
 }
 
@@ -213,10 +216,26 @@ export async function runWatch(options: WatchCommandOptions): Promise<void> {
       let localLastCheckedAt = prev?.localLastCheckedAt ?? null;
       let localLastProblem = prev?.localLastProblem ?? null;
       if (options.local && isLocalCheckDue(localLastCheckedAt, localCheckMinutes)) {
-        const problem = await probeLocal(report.operator.registered, report.operator.active);
+        const problem = await probeLocal(report.operator.registered, report.operator.active, config.nodeBin);
         alerts.push(...localProblemAlerts(localLastProblem, problem));
         localLastProblem = problem;
         localLastCheckedAt = new Date().toISOString();
+      }
+
+      // Peer health runs every tick: an isolated node is the failure the chain
+      // cannot show you, and it is cheap to read from the local journal.
+      let peerVerdict = prev?.peerVerdict ?? null;
+      if (options.local) {
+        const health = await probePeers(config.nodeUnit, config.logWindowMinutes);
+        if (health) {
+          alerts.push(
+            ...peerAlerts(peerVerdict, health, {
+              registered: report.operator.registered,
+              active: report.operator.active,
+            }),
+          );
+          peerVerdict = health.verdict;
+        }
       }
 
       const releaseCheck = await maybeCheckRelease(prev, config.releaseCheckMinutes);
@@ -234,6 +253,7 @@ export async function runWatch(options: WatchCommandOptions): Promise<void> {
           releaseLastCheckedAt: releaseCheck.releaseLastCheckedAt,
           localLastCheckedAt,
           localLastProblem,
+          peerVerdict,
         }),
       );
     } catch (err) {

@@ -35,15 +35,22 @@ export function stripAnsi(text: string): string {
  * values already fetched for this tick. Returns a one-line problem
  * description, or null when everything agrees.
  */
-export async function probeLocal(onChainRegistered: boolean, onChainActive: boolean): Promise<string | null> {
+export async function probeLocal(
+  onChainRegistered: boolean,
+  onChainActive: boolean,
+  bin = 'interfold',
+): Promise<string | null> {
   let stdout: string;
   try {
-    const result = await execAsync('interfold ciphernode status', { timeout: 60_000 });
+    const result = await execAsync(`${bin} ciphernode status`, { timeout: 60_000 });
     stdout = result.stdout;
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
     const msg = stripAnsi(raw).replace(/\s+/g, ' ').trim();
-    return `\`interfold ciphernode status\` failed: ${msg}`;
+    const hint = /not found|ENOENT/i.test(msg)
+      ? ' (a cron or systemd shell has a minimal PATH -- set INTERFOLD_BIN to the full path)'
+      : '';
+    return `\`${bin} ciphernode status\` failed: ${msg}${hint}`;
   }
 
   const local = parseLocalStatus(stdout);

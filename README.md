@@ -7,12 +7,37 @@ A small TypeScript CLI for operators of [Interfold](https://docs.theinterfold.co
 - `nodewatch exporter` — Prometheus `/metrics` + Grafana dashboard
 - `nodewatch e3 <id>` — inspect a single E3 request's lifecycle
 - `nodewatch version` — compare the latest interfold release against your local `interfold` binary
+- `--local` on `status`, `watch` and `exporter` — peer-layer health read from the node's own log
 
 ![status command output](docs/status.png)
 
 ## Why
 
 Ciphernode operators post a FOLD bond and hold tFOLD tickets to participate in Interfold's threshold FHE committees. If your operator silently deregisters, your bond gets partially slashed, or `requestsPaused` flips, you want to know from a cron job or a dashboard — not by noticing your rewards stopped. This tool is read-only and safe to run next to your actual ciphernode.
+
+## Why on-chain status is not enough
+
+Every on-chain field can look perfect — Registered, Active, bond intact, tickets intact — while the node sits with **zero connected peers** and silently misses every committee it is selected for. The chain has no idea. Nothing in a chain-only monitor will go red.
+
+That is not hypothetical. It is the failure this tool grew out of: a node that looked healthy from every angle the chain exposes, was in fact talking to nobody for days because a bootstrap address pinned a peer id that no longer matched the host behind it.
+
+`--local` closes that gap by reading the ciphernode's own journal and classifying the peer layer:
+
+| Verdict | What it means |
+|---|---|
+| `healthy` | the log reports connected peers and no peer errors |
+| `degraded` | peers exist, but a dialled address is pinned to a stale peer id |
+| `isolated` | zero connected peers, or work failing with "no connected peers available" |
+| `unknown` | nothing either way in the window — a settled node logs peer counts only at bootstrap |
+
+The alert that matters reads:
+
+```
+[CRITICAL] Node is Registered and Active on-chain but network-isolated:
+           16 request(s) failed with "no connected peers available"
+```
+
+Two details worth knowing. A peer id mismatch on a loopback address is the node meeting itself and is deliberately ignored — only mismatches on real addresses are reported. And when the journal cannot be read at all, the metrics report `-1` rather than `0`, so a missing log never masquerades as an isolated node on your dashboard.
 
 ## Install
 
@@ -43,6 +68,11 @@ All commands read from `.env` (or the real environment) and every value can be o
 | `POLL_INTERVAL` | `--interval` | `60` (seconds) | `watch` |
 | `EXPORTER_PORT` | `--port` | `9464` | `exporter` |
 | `RELEASE_CHECK_MINUTES` | `--release-check-interval` | `60` (minutes) | `watch`, `exporter` |
+| `INTERFOLD_UNIT` | - | `interfold` | `--local` |
+| `INTERFOLD_BIN` | - | `interfold` | `--local` |
+| `LOG_WINDOW_MINUTES` | - | `15` (minutes) | `--local` |
+
+`INTERFOLD_BIN` exists because a cron or systemd shell has a minimal `PATH` and will not find `interfold` where your interactive login does. If `--local` reports that the status command was not found, set this to the full path.
 
 See [`.env.example`](.env.example).
 

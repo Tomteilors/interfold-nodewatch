@@ -19,6 +19,8 @@ export interface WatchSnapshot {
   /** --local: last time `interfold ciphernode status` was run, and the problem it reported (null = healthy). */
   localLastCheckedAt?: string | null;
   localLastProblem?: string | null;
+  /** --local: last peer-layer verdict, so the same verdict is not alerted twice. */
+  peerVerdict?: 'healthy' | 'degraded' | 'isolated' | 'unknown' | null;
 }
 
 export type AlertSeverity = 'info' | 'warning' | 'critical';

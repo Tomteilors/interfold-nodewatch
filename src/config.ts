@@ -8,6 +8,9 @@ export const DEFAULT_RPC_URL = 'https://ethereum-rpc.publicnode.com';
 export const DEFAULT_POLL_INTERVAL_SECONDS = 60;
 export const DEFAULT_EXPORTER_PORT = 9464;
 export const DEFAULT_RELEASE_CHECK_MINUTES = 60;
+export const DEFAULT_NODE_UNIT = 'interfold';
+export const DEFAULT_NODE_BIN = 'interfold';
+export const DEFAULT_LOG_WINDOW_MINUTES = 15;
 
 export interface ResolvedConfig {
   rpcUrl: string;
@@ -18,6 +21,15 @@ export interface ResolvedConfig {
   pollIntervalSeconds: number;
   exporterPort: number;
   releaseCheckMinutes: number;
+  /** systemd unit the ciphernode runs under, read by the peer-health probe. */
+  nodeUnit: string;
+  /**
+   * Path to the `interfold` binary. Needed because a cron or systemd shell has
+   * a minimal PATH and will not find it where an interactive login does.
+   */
+  nodeBin: string;
+  /** How far back the peer-health probe reads the node log, in minutes. */
+  logWindowMinutes: number;
 }
 
 export interface ConfigOverrides {
@@ -27,6 +39,9 @@ export interface ConfigOverrides {
   pollIntervalSeconds?: number;
   exporterPort?: number;
   releaseCheckMinutes?: number;
+  nodeUnit?: string;
+  nodeBin?: string;
+  logWindowMinutes?: number;
 }
 
 function parseChain(value: string | undefined): ChainName {
@@ -91,6 +106,13 @@ export function resolveConfig(overrides: ConfigOverrides = {}): ResolvedConfig {
     (process.env.RELEASE_CHECK_MINUTES ? Number(process.env.RELEASE_CHECK_MINUTES) : undefined) ??
     DEFAULT_RELEASE_CHECK_MINUTES;
 
+  const nodeUnit = overrides.nodeUnit ?? process.env.INTERFOLD_UNIT ?? DEFAULT_NODE_UNIT;
+  const nodeBin = overrides.nodeBin ?? process.env.INTERFOLD_BIN ?? DEFAULT_NODE_BIN;
+  const logWindowMinutes =
+    overrides.logWindowMinutes ??
+    (process.env.LOG_WINDOW_MINUTES ? Number(process.env.LOG_WINDOW_MINUTES) : undefined) ??
+    DEFAULT_LOG_WINDOW_MINUTES;
+
   return {
     rpcUrl,
     chain,
@@ -100,6 +122,9 @@ export function resolveConfig(overrides: ConfigOverrides = {}): ResolvedConfig {
     pollIntervalSeconds,
     exporterPort,
     releaseCheckMinutes,
+    nodeUnit,
+    nodeBin,
+    logWindowMinutes,
   };
 }
 

@@ -1,5 +1,7 @@
 import { Registry, Gauge } from 'prom-client';
 import type { NodeStatusReport } from '../types.js';
+import type { PeerHealth } from '../core/peerHealth.js';
+import { realMismatches } from '../core/peerHealth.js';
 import { E3_STAGE_NAMES, E3Stage } from '../chain/abi/coordinator.js';
 
 export interface ReleaseInfo {
@@ -14,6 +16,7 @@ export interface NodewatchMetrics {
   update(report: NodeStatusReport): void;
   markRpcDown(): void;
   updateRelease(info: ReleaseInfo): void;
+  updatePeers(health: PeerHealth | null): void;
 }
 
 export function createMetrics(): NodewatchMetrics {
@@ -93,6 +96,32 @@ export function createMetrics(): NodewatchMetrics {
     registers: [registry],
   });
 
+  const peersConnected = new Gauge({
+    name: 'interfold_peers_connected',
+    help: 'Connected peers from the ciphernode log. -1 when the log gave no reading',
+    registers: [registry],
+  });
+  const peersKnown = new Gauge({
+    name: 'interfold_peers_known',
+    help: 'Peers the ciphernode knows about. -1 when the log gave no reading',
+    registers: [registry],
+  });
+  const peerIsolated = new Gauge({
+    name: 'interfold_peer_isolated',
+    help: '1 if the node has no usable peers -- the failure that on-chain status cannot show',
+    registers: [registry],
+  });
+  const peerIdMismatch = new Gauge({
+    name: 'interfold_peer_id_mismatch',
+    help: 'Non-loopback peer id mismatches in the window: a pinned peer id in a dialled address is stale',
+    registers: [registry],
+  });
+  const peerBootstrapEmpty = new Gauge({
+    name: 'interfold_peer_bootstrap_empty',
+    help: 'Times bootstrap reported no known peers in the window',
+    registers: [registry],
+  });
+
   function update(report: NodeStatusReport): void {
     operatorRegistered.set(report.operator.registered ? 1 : 0);
     operatorActive.set(report.operator.active ? 1 : 0);
@@ -124,6 +153,28 @@ export function createMetrics(): NodewatchMetrics {
     rpcUp.set(0);
   }
 
+  /**
+   * Peer-layer gauges. A null health means the log could not be read at all --
+   * that is reported as "no reading" (-1) rather than a confident zero, so a
+   * missing journal never looks like an isolated node on the dashboard.
+   */
+  function updatePeers(health: PeerHealth | null): void {
+    if (!health) {
+      peersConnected.set(-1);
+      peersKnown.set(-1);
+      peerIsolated.set(0);
+      peerIdMismatch.set(0);
+      peerBootstrapEmpty.set(0);
+      return;
+    }
+    const { observation } = health;
+    peersConnected.set(observation.connected ?? -1);
+    peersKnown.set(observation.total ?? -1);
+    peerIsolated.set(health.verdict === 'isolated' ? 1 : 0);
+    peerIdMismatch.set(realMismatches(observation).length);
+    peerBootstrapEmpty.set(observation.bootstrapEmpty);
+  }
+
   function updateRelease(info: ReleaseInfo): void {
     releaseLatestInfo.reset();
     if (info.latestTag) {
@@ -138,5 +189,5 @@ export function createMetrics(): NodewatchMetrics {
     updateAvailable.set(info.updateAvailable ? 1 : 0);
   }
 
-  return { registry, rpcUp, update, markRpcDown, updateRelease };
+  return { registry, rpcUp, update, markRpcDown, updateRelease, updatePeers };
 }
