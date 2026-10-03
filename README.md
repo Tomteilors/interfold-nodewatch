@@ -17,7 +17,7 @@ Ciphernode operators post a FOLD bond and hold tFOLD tickets to participate in I
 ## Install
 
 ```bash
-git clone https://github.com/Zol55/interfold-nodewatch.git
+git clone https://github.com/Tomteilors/interfold-nodewatch.git
 cd interfold-nodewatch
 npm install
 npm run build

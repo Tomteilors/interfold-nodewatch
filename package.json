@@ -11,13 +11,13 @@
     "cli",
     "node-operator"
   ],
-  "homepage": "https://github.com/Zol55/interfold-nodewatch#readme",
+  "homepage": "https://github.com/Tomteilors/interfold-nodewatch#readme",
   "bugs": {
-    "url": "https://github.com/Zol55/interfold-nodewatch/issues"
+    "url": "https://github.com/Tomteilors/interfold-nodewatch/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Zol55/interfold-nodewatch.git"
+    "url": "git+https://github.com/Tomteilors/interfold-nodewatch.git"
   },
   "license": "MIT",
   "author": "Tom Teilors <tomteilors@gmail.com>",
