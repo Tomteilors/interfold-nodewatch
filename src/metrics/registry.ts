@@ -3,6 +3,7 @@ import type { NodeStatusReport } from '../types.js';
 import type { PeerHealth } from '../core/peerHealth.js';
 import { realMismatches } from '../core/peerHealth.js';
 import { E3_STAGE_NAMES, E3Stage } from '../chain/abi/coordinator.js';
+import { sumBySymbol, type PendingReward } from '../core/rewards.js';
 
 export interface ReleaseInfo {
   latestTag: string | null;
@@ -17,6 +18,7 @@ export interface NodewatchMetrics {
   markRpcDown(): void;
   updateRelease(info: ReleaseInfo): void;
   updatePeers(health: PeerHealth | null): void;
+  updateRewards(pending: PendingReward[]): void;
 }
 
 export function createMetrics(): NodewatchMetrics {
@@ -122,6 +124,18 @@ export function createMetrics(): NodewatchMetrics {
     registers: [registry],
   });
 
+  const rewardsPending = new Gauge({
+    name: 'interfold_rewards_pending',
+    help: 'Unclaimed E3 rewards credited to the bond owner, in whole token units, by token symbol. Pull-based: claimReward(e3Id) from the bond owner wallet',
+    labelNames: ['token'],
+    registers: [registry],
+  });
+  const rewardsPendingCount = new Gauge({
+    name: 'interfold_rewards_pending_count',
+    help: 'Number of E3 ids with an unclaimed reward for the bond owner',
+    registers: [registry],
+  });
+
   function update(report: NodeStatusReport): void {
     operatorRegistered.set(report.operator.registered ? 1 : 0);
     operatorActive.set(report.operator.active ? 1 : 0);
@@ -189,5 +203,13 @@ export function createMetrics(): NodewatchMetrics {
     updateAvailable.set(info.updateAvailable ? 1 : 0);
   }
 
-  return { registry, rpcUp, update, markRpcDown, updateRelease, updatePeers };
+  function updateRewards(pending: PendingReward[]): void {
+    rewardsPending.reset();
+    for (const [symbol, amount] of sumBySymbol(pending)) {
+      rewardsPending.set({ token: symbol }, amount);
+    }
+    rewardsPendingCount.set(pending.length);
+  }
+
+  return { registry, rpcUp, update, markRpcDown, updateRelease, updatePeers, updateRewards };
 }

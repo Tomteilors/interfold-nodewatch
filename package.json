@@ -1,6 +1,6 @@
 {
   "name": "interfold-nodewatch",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Status, watch, Prometheus exporter and E3 inspector CLI for Interfold ciphernode operators",
   "keywords": [
     "interfold",
@@ -28,6 +28,7 @@
     "interfold-nodewatch": "dist/cli.js"
   },
   "files": [
+    "CHANGELOG.md",
     "dist",
     "grafana",
     "README.md",

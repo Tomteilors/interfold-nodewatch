@@ -5,6 +5,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 export const DEFAULT_RPC_URL = 'https://ethereum-rpc.publicnode.com';
+/**
+ * Used only for the reward log scan when RPC_URL is left at the default:
+ * publicnode refuses eth_getLogs over older ranges without a personal token
+ * ("Archive requests require a personal token"), mevblocker serves them.
+ */
+export const DEFAULT_LOGS_RPC_URL = 'https://rpc.mevblocker.io';
 export const DEFAULT_POLL_INTERVAL_SECONDS = 60;
 export const DEFAULT_EXPORTER_PORT = 9464;
 export const DEFAULT_RELEASE_CHECK_MINUTES = 60;
@@ -14,8 +20,12 @@ export const DEFAULT_LOG_WINDOW_MINUTES = 15;
 
 export interface ResolvedConfig {
   rpcUrl: string;
+  /** RPC used for historical eth_getLogs (the reward scan). */
+  logsRpcUrl: string;
   chain: ChainName;
   operatorAddress: Address | undefined;
+  /** Explicit bond owner; otherwise it is read from bondOwnerOf(operator). */
+  bondOwnerAddress: Address | undefined;
   telegramBotToken: string | undefined;
   telegramChatId: string | undefined;
   pollIntervalSeconds: number;
@@ -34,8 +44,10 @@ export interface ResolvedConfig {
 
 export interface ConfigOverrides {
   rpcUrl?: string;
+  logsRpcUrl?: string;
   chain?: string;
   operator?: string;
+  bondOwner?: string;
   pollIntervalSeconds?: number;
   exporterPort?: number;
   releaseCheckMinutes?: number;
@@ -82,14 +94,22 @@ export function resolveConfig(overrides: ConfigOverrides = {}): ResolvedConfig {
   const rpcUrl = overrides.rpcUrl ?? process.env.RPC_URL ?? DEFAULT_RPC_URL;
   const chain = parseChain(overrides.chain ?? process.env.CHAIN);
 
-  const rawOperator = overrides.operator ?? process.env.OPERATOR_ADDRESS;
-  let operatorAddress: Address | undefined;
-  if (rawOperator) {
-    if (!isAddress(rawOperator)) {
-      throw new Error(`Not a valid address: "${rawOperator}" (--operator or OPERATOR_ADDRESS)`);
-    }
-    operatorAddress = rawOperator;
-  }
+  // An explicit RPC_URL is assumed to be your own (or a paid) endpoint that
+  // serves logs; only the built-in default needs the log-capable fallback.
+  const logsRpcUrl =
+    overrides.logsRpcUrl ??
+    // `||`, not `??`: .env.example ships LOGS_RPC_URL= empty.
+    (process.env.LOGS_RPC_URL || undefined) ??
+    (rpcUrl === DEFAULT_RPC_URL ? DEFAULT_LOGS_RPC_URL : rpcUrl);
+
+  const operatorAddress = parseAddress(
+    overrides.operator ?? process.env.OPERATOR_ADDRESS,
+    '--operator or OPERATOR_ADDRESS',
+  );
+  const bondOwnerAddress = parseAddress(
+    overrides.bondOwner ?? process.env.BOND_OWNER_ADDRESS,
+    '--bond-owner or BOND_OWNER_ADDRESS',
+  );
 
   const pollIntervalSeconds =
     overrides.pollIntervalSeconds ??
@@ -115,8 +135,10 @@ export function resolveConfig(overrides: ConfigOverrides = {}): ResolvedConfig {
 
   return {
     rpcUrl,
+    logsRpcUrl,
     chain,
     operatorAddress,
+    bondOwnerAddress,
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
     telegramChatId: process.env.TELEGRAM_CHAT_ID,
     pollIntervalSeconds,
@@ -126,6 +148,14 @@ export function resolveConfig(overrides: ConfigOverrides = {}): ResolvedConfig {
     nodeBin,
     logWindowMinutes,
   };
+}
+
+function parseAddress(raw: string | undefined, source: string): Address | undefined {
+  if (!raw) return undefined;
+  if (!isAddress(raw)) {
+    throw new Error(`Not a valid address: "${raw}" (${source})`);
+  }
+  return raw;
 }
 
 export function requireOperator(config: ResolvedConfig): Address {

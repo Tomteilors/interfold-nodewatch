@@ -46,3 +46,22 @@ export const CONTRACT_ADDRESSES: Record<ChainName, ContractAddresses> = {
     sUsds: '0xC35B783cA97710be47Fc81D10dADc895EfcD865c',
   },
 };
+
+/**
+ * First block worth scanning for `RewardCredited` when nothing better is
+ * known. On mainnet the earliest credit is in block 26,105,291 (checked
+ * 2026-10-09), so starting at 26,000,000 cannot miss one. Sepolia has no
+ * known start; there the scan covers the last REWARDS_FALLBACK_LOOKBACK blocks
+ * unless `--from-block` says otherwise.
+ */
+export const REWARDS_START_BLOCK: Record<ChainName, bigint | null> = {
+  mainnet: 26_000_000n,
+  sepolia: null,
+};
+
+export const REWARDS_FALLBACK_LOOKBACK = 200_000n;
+
+export const ETHERSCAN_BASE: Record<ChainName, string> = {
+  mainnet: 'https://etherscan.io',
+  sepolia: 'https://sepolia.etherscan.io',
+};

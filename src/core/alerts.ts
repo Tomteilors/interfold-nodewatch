@@ -21,6 +21,12 @@ export interface WatchSnapshot {
   localLastProblem?: string | null;
   /** --local: last peer-layer verdict, so the same verdict is not alerted twice. */
   peerVerdict?: 'healthy' | 'degraded' | 'isolated' | 'unknown' | null;
+  /** E3 rewards: bond owner the scan below belongs to (a change restarts the scan). */
+  rewardsOwner?: string | null;
+  /** Last block scanned for RewardCredited, bigint as decimal string. */
+  rewardsScannedBlock?: string | null;
+  /** e3Ids already alerted as unclaimed, so each reward is announced once. */
+  rewardsAlerted?: string[];
 }
 
 export type AlertSeverity = 'info' | 'warning' | 'critical';

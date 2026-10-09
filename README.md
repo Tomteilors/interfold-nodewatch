@@ -6,6 +6,7 @@ A small TypeScript CLI for operators of [Interfold](https://docs.theinterfold.co
 - `nodewatch watch` — polls the chain and alerts on stdout / Telegram when something changes
 - `nodewatch exporter` — Prometheus `/metrics` + Grafana dashboard
 - `nodewatch e3 <id>` — inspect a single E3 request's lifecycle
+- `nodewatch rewards` — unclaimed E3 rewards for your bond owner, with the claim link (`watch` alerts on new ones, `exporter` exports them)
 - `nodewatch version` — compare the latest interfold release against your local `interfold` binary
 - `--local` on `status`, `watch` and `exporter` — peer-layer health read from the node's own log
 
@@ -62,7 +63,9 @@ All commands read from `.env` (or the real environment) and every value can be o
 |---|---|---|---|
 | `RPC_URL` | `--rpc-url` | `https://ethereum-rpc.publicnode.com` | all |
 | `CHAIN` | `--chain` | `mainnet` | all |
-| `OPERATOR_ADDRESS` | `--operator` | - | `status`, `watch`, `exporter` |
+| `OPERATOR_ADDRESS` | `--operator` | - | `status`, `watch`, `exporter`, `rewards` |
+| `BOND_OWNER_ADDRESS` | `--bond-owner` | `bondOwnerOf(operator)` read on-chain | `rewards`, `watch`, `exporter` |
+| `LOGS_RPC_URL` | `--logs-rpc-url` | `RPC_URL`; `https://rpc.mevblocker.io` while `RPC_URL` is the default | reward log scan |
 | `TELEGRAM_BOT_TOKEN` | - | - | `watch` |
 | `TELEGRAM_CHAT_ID` | - | - | `watch` |
 | `POLL_INTERVAL` | `--interval` | `60` (seconds) | `watch` |
@@ -71,6 +74,8 @@ All commands read from `.env` (or the real environment) and every value can be o
 | `INTERFOLD_UNIT` | - | `interfold` | `--local` |
 | `INTERFOLD_BIN` | - | `interfold` | `--local` |
 | `LOG_WINDOW_MINUTES` | - | `15` (minutes) | `--local` |
+
+`LOGS_RPC_URL` exists because the default `RPC_URL` (publicnode) refuses `eth_getLogs` over older block ranges without a personal token, and finding rewards means scanning back to when rewards started. If you set your own `RPC_URL`, it is used for the scan too.
 
 `INTERFOLD_BIN` exists because a cron or systemd shell has a minimal `PATH` and will not find `interfold` where your interactive login does. If `--local` reports that the status command was not found, set this to the full path.
 
@@ -131,6 +136,11 @@ It alerts on:
 - New E3 requests landing on-chain
 - The RPC endpoint failing 3 polls in a row (and recovering)
 - A new interfold release appearing on GitHub, and your local `interfold` binary falling behind it (checked every `--release-check-interval` minutes, default 60 -- see [Release tracking](#release-tracking))
+- **An unclaimed E3 reward credited to your bond owner** -- once per E3, with the amount and the claim link (see [E3 rewards](#e3-rewards)). This one also fires on the very first tick: rewards that were already sitting unclaimed when you started `watch` are announced too. `--no-rewards` turns it off.
+
+```
+[INFO] Unclaimed E3 reward: 18.048 USDS credited to bond owner 0x1111…1111 for E3 1845…2978. Rewards are pull-based and stay on the contract until claimed: call claimReward(e3Id) at https://etherscan.io/address/0x28cF63B459e6218C69EA97ea7D90541cf648c715#writeProxyContract . Claim from the BOND OWNER wallet, not the operator key.
+```
 
 Add `--local` to also run `interfold ciphernode status` on the same machine and alert if that command fails, or if its reported Registered/Active disagrees with the chain -- useful as a sanity check that your local ciphernode process and its on-chain state agree. This is best-effort: the exact output format of that command isn't publicly documented, so nodewatch looks for `Registered`/`Active` followed by a boolean-ish token and otherwise stays quiet about it. The status command makes several RPC calls through your node's own `rpc_url`, so it runs only every `--local-check-interval` minutes (default 10), and a problem is reported once when it appears and once when it clears -- not every tick. A typical thing it catches: the node's RPC provider rate-limiting (`HTTP error 429 ... rate limit exceeded`) while the on-chain state is still fine.
 
@@ -161,7 +171,11 @@ interfold_rpc_up 1
 interfold_last_block 25997456
 interfold_release_latest_info{tag="v0.15.0"} 1
 interfold_update_available 0
+interfold_rewards_pending{token="USDS"} 18.048
+interfold_rewards_pending_count 1
 ```
+
+`interfold_rewards_pending` is the unclaimed reward total for the bond owner, per token, in whole units (no series while nothing is pending); `interfold_rewards_pending_count` is how many E3s it spans. A simple alert rule: `interfold_rewards_pending_count > 0 for 1d`.
 
 (`interfold_local_version_info{tag="..."}` only appears if the `interfold` binary is found on `PATH`; see [Release tracking](#release-tracking).)
 
@@ -202,6 +216,45 @@ E3 #3
 ```
 
 If the E3 failed, a `Failure reason:` line is added (one of the reasons from `@interfold/sdk`'s `FailureReason` enum: `CommitteeFormationTimeout`, `DKGTimeout`, `ComputeProviderFailed`, etc).
+
+### `nodewatch rewards`
+
+```
+$ nodewatch rewards --operator 0xYourOperatorAddress
+Bond owner:   0x1111111111111111111111111111111111111111
+Scanned:      blocks 26000000-26153068 on mainnet
+Credited:     1 E3 reward(s) ever, 1 still unclaimed
+
+  E3 18458939420885977824981152629962741023865184457287647280899939019117062782978
+    18.048 USDS  (token 0xdC035D45d973E3EC169d2276DDab16f1e407384F, credited in block 26105291)
+
+Total unclaimed: 18.048 USDS
+
+Rewards are pull-based: nothing arrives on its own. To claim, open
+  https://etherscan.io/address/0x28cF63B459e6218C69EA97ea7D90541cf648c715#writeProxyContract
+connect the wallet, call claimReward(e3Id) once per E3 id above.
+Claim from the BOND OWNER wallet, not the operator key.
+```
+
+Pass `--bond-owner 0x...` directly, or `--operator 0x...` and the bond owner is looked up with `bondOwnerOf`. `--json` prints the same as JSON (raw amounts included), `--from-block` narrows the scan. The command is read-only like everything else here; claiming is something you do in your own wallet.
+
+## E3 rewards
+
+When an E3 completes, the Interfold coordinator pays each committee member's share, but it does **not** send it anywhere. It emits `RewardCredited(e3Id, account, token, amount)` and keeps the funds on the contract until they are pulled with `claimReward(e3Id)`. Three things trip operators up:
+
+1. **The reward goes to the bond owner, not the operator.** Looking at your operator address shows nothing; `pendingReward(e3Id, operator)` is 0. The account in the event is the address that owns the bond.
+2. **It never arrives on its own.** There is no push and no expiry in the contract, so an unclaimed reward just sits there until somebody notices.
+3. **Only the bond owner can claim it.** `claimReward(e3Id)` takes nothing but the e3Id -- the reward it pays out is the caller's own, so the transaction has to come from the bond owner wallet. Your ciphernode's operator key has nothing to claim.
+
+How nodewatch finds them: `eth_getLogs` for `RewardCredited` with `account` = your bond owner (scanning from block 26,000,000 on mainnet; the first credit on the network is in block 26,105,291), then `pendingReward(e3Id, bondOwner)` on each hit -- non-zero means still claimable, zero means already claimed.
+
+How to claim by hand:
+
+1. Run `nodewatch rewards` and copy the e3Id (the long number).
+2. Open the coordinator's [Write as Proxy tab on Etherscan](https://etherscan.io/address/0x28cF63B459e6218C69EA97ea7D90541cf648c715#writeProxyContract).
+3. *Connect to Web3* with the **bond owner** wallet.
+4. Find `claimReward`, paste the e3Id, *Write*, confirm in the wallet.
+5. Run `nodewatch rewards` again: the E3 should be gone from the list.
 
 ## Release tracking
 
@@ -251,7 +304,7 @@ Sepolia addresses (from [`packages/interfold-contracts/deployed_contracts.json`]
 
 ## Security
 
-- **No private key, ever.** Every call this tool makes is a read (`eth_call`/`eth_getLogs`/`eth_blockNumber`). There is nowhere in the codebase that accepts, stores, or asks for a private key.
+- **No private key, ever.** Every call this tool makes is a read (`eth_call`/`eth_getLogs`/`eth_blockNumber`). There is nowhere in the codebase that accepts, stores, or asks for a private key. That includes rewards: nodewatch tells you what is claimable and links to the contract, the claim itself is a transaction you sign in your own wallet.
 - Your operator address is a public on-chain fact; passing it as a flag or env var carries no more risk than looking it up on Etherscan.
 - `watch`'s Telegram integration only ever sends outbound `sendMessage` calls with your bot token -- it never reads updates, so it can't receive or act on commands sent to the bot.
 - `--local` shells out to `interfold ciphernode status` via `child_process.exec` with a fixed, non-interpolated command string -- no user input reaches the shell. Release tracking does the same for `interfold --version`.

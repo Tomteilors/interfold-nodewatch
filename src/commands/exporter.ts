@@ -7,6 +7,15 @@ import { fetchLatestRelease, getLocalVersion } from '../core/release.js';
 import { isNewer } from '../core/semver.js';
 import { createMetrics } from '../metrics/registry.js';
 import { probePeers } from '../core/peerHealth.js';
+import type { Address } from 'viem';
+import {
+  fetchPendingRewards,
+  resolveRewardsFromBlock,
+  scanRewardCredits,
+  type RewardCredit,
+} from '../core/rewards.js';
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 export interface ExporterCommandOptions {
   operator?: string;
@@ -16,6 +25,10 @@ export interface ExporterCommandOptions {
   releaseCheckInterval?: string;
   /** Read the local ciphernode journal for peer health alongside the chain. */
   local?: boolean;
+  bondOwner?: string;
+  logsRpcUrl?: string;
+  /** Commander sets this to false for --no-rewards. */
+  rewards?: boolean;
 }
 
 export async function runExporter(options: ExporterCommandOptions): Promise<void> {
@@ -23,6 +36,8 @@ export async function runExporter(options: ExporterCommandOptions): Promise<void
     rpcUrl: options.rpcUrl,
     chain: options.chain,
     operator: options.operator,
+    bondOwner: options.bondOwner,
+    logsRpcUrl: options.logsRpcUrl,
     exporterPort: options.port ? Number(options.port) : undefined,
     releaseCheckMinutes: options.releaseCheckInterval ? Number(options.releaseCheckInterval) : undefined,
   });
@@ -30,6 +45,32 @@ export async function runExporter(options: ExporterCommandOptions): Promise<void
   const addresses = CONTRACT_ADDRESSES[config.chain];
   const client = createClient(config.rpcUrl, config.chain);
   const metrics = createMetrics();
+  const logsClient = config.logsRpcUrl === config.rpcUrl ? client : createClient(config.logsRpcUrl, config.chain);
+
+  // In-memory reward tracking: credits seen so far plus the last scanned
+  // block, so each refresh is one small eth_getLogs plus a pendingReward
+  // read per credited E3 (claimed ones drop out as their pending hits 0).
+  let rewardOwner: Address | null = null;
+  let rewardScannedBlock: bigint | null = null;
+  let rewardCredits: RewardCredit[] = [];
+
+  async function refreshRewards(owner: Address, head: bigint): Promise<void> {
+    if (owner !== rewardOwner) {
+      rewardOwner = owner;
+      rewardScannedBlock = null;
+      rewardCredits = [];
+    }
+    const fromBlock = rewardScannedBlock !== null ? rewardScannedBlock + 1n : resolveRewardsFromBlock(config.chain, head);
+    if (fromBlock <= head) {
+      rewardCredits.push(...(await scanRewardCredits(logsClient, addresses.coordinator, owner, fromBlock, head)));
+      rewardScannedBlock = head;
+    }
+    const pending = await fetchPendingRewards(client, addresses.coordinator, owner, rewardCredits);
+    // Forget credits that are fully claimed so the per-refresh reads stay bounded.
+    const stillPending = new Set(pending.map((r) => r.e3Id));
+    rewardCredits = rewardCredits.filter((c) => stillPending.has(c.e3Id));
+    metrics.updateRewards(pending);
+  }
 
   async function refresh(): Promise<void> {
     try {
@@ -37,6 +78,15 @@ export async function runExporter(options: ExporterCommandOptions): Promise<void
       metrics.update(report);
       if (options.local) {
         metrics.updatePeers(await probePeers(config.nodeUnit, config.logWindowMinutes));
+      }
+      const owner = config.bondOwnerAddress ?? report.operator.bondOwner;
+      if (options.rewards !== false && owner && owner !== ZERO_ADDRESS) {
+        try {
+          await refreshRewards(owner, report.chainInfo.blockNumber);
+        } catch (err) {
+          // Keep the last good reward gauges; a log-scan hiccup is not an RPC outage.
+          console.error('[exporter] reward check failed:', err instanceof Error ? err.message : err);
+        }
       }
     } catch (err) {
       metrics.markRpcDown();

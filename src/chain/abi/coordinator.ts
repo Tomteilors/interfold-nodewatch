@@ -126,6 +126,31 @@ export const coordinatorAbi = [
       { name: 'newStage', type: 'uint8', indexed: false },
     ],
   },
+  // E3 rewards are pull-based: when an E3 completes, the coordinator credits
+  // each committee member's share to that operator's BOND OWNER and holds it
+  // until the bond owner calls claimReward(e3Id). Signatures checked against
+  // live mainnet logs/eth_call on 2026-10-09 (topic0 of RewardCredited is
+  // 0xdf636f3c..., pendingReward selector is 0x98969e82).
+  {
+    name: 'pendingReward',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'e3Id', type: 'uint256' },
+      { name: 'account', type: 'address' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'RewardCredited',
+    type: 'event',
+    inputs: [
+      { name: 'e3Id', type: 'uint256', indexed: true },
+      { name: 'account', type: 'address', indexed: true },
+      { name: 'token', type: 'address', indexed: true },
+      { name: 'amount', type: 'uint256', indexed: false },
+    ],
+  },
 ] as const;
 
 /**

@@ -10,6 +10,14 @@ import { peerAlerts, probePeers, type PeerVerdict } from '../core/peerHealth.js'
 import { fetchLatestRelease, getLocalVersion } from '../core/release.js';
 import { checkNewReleaseAlert, checkUpdateAvailableAlert } from '../core/releaseAlerts.js';
 import { sendTelegramMessage } from '../notify/telegram.js';
+import type { Address, PublicClient } from 'viem';
+import type { ChainName, ContractAddresses } from '../chain/addresses.js';
+import {
+  fetchPendingRewards,
+  newRewardAlerts,
+  resolveRewardsFromBlock,
+  scanRewardCredits,
+} from '../core/rewards.js';
 
 export interface WatchCommandOptions {
   operator?: string;
@@ -21,10 +29,15 @@ export interface WatchCommandOptions {
   localCheckInterval?: string;
   once?: boolean;
   releaseCheckInterval?: string;
+  bondOwner?: string;
+  logsRpcUrl?: string;
+  /** Commander sets this to false for --no-rewards. */
+  rewards?: boolean;
 }
 
 const RPC_FAILURE_THRESHOLD = 3;
 const DEFAULT_LOCAL_CHECK_MINUTES = 10;
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 interface SnapshotFields {
   report: Awaited<ReturnType<typeof fetchFullStatus>>;
@@ -36,6 +49,13 @@ interface SnapshotFields {
   localLastCheckedAt?: string | null;
   localLastProblem?: string | null;
   peerVerdict?: PeerVerdict | null;
+  rewards?: RewardState;
+}
+
+interface RewardState {
+  rewardsOwner: string | null;
+  rewardsScannedBlock: string | null;
+  rewardsAlerted: string[];
 }
 
 function toSnapshot(fields: SnapshotFields): WatchSnapshot {
@@ -55,7 +75,65 @@ function toSnapshot(fields: SnapshotFields): WatchSnapshot {
     localLastCheckedAt: fields.localLastCheckedAt ?? null,
     localLastProblem: fields.localLastProblem ?? null,
     peerVerdict: fields.peerVerdict ?? null,
+    rewardsOwner: fields.rewards?.rewardsOwner ?? null,
+    rewardsScannedBlock: fields.rewards?.rewardsScannedBlock ?? null,
+    rewardsAlerted: fields.rewards?.rewardsAlerted ?? [],
   };
+}
+
+function carriedRewards(prev: WatchSnapshot | null): RewardState {
+  return {
+    rewardsOwner: prev?.rewardsOwner ?? null,
+    rewardsScannedBlock: prev?.rewardsScannedBlock ?? null,
+    rewardsAlerted: prev?.rewardsAlerted ?? [],
+  };
+}
+
+interface RewardCheckContext {
+  client: PublicClient;
+  logsClient: PublicClient;
+  addresses: ContractAddresses;
+  chain: ChainName;
+}
+
+/**
+ * Incremental scan for RewardCredited to the bond owner since the last tick,
+ * then one alert per still-claimable e3Id (ever). The very first scan starts
+ * where rewards begin on this chain, so rewards that were already sitting
+ * unclaimed before nodewatch started are announced too. Failures are logged
+ * and retried next tick from the same block; they never block other alerts.
+ */
+async function checkRewards(
+  ctx: RewardCheckContext,
+  prev: WatchSnapshot | null,
+  owner: Address,
+  currentBlock: bigint,
+): Promise<{ alerts: Alert[]; state: RewardState }> {
+  const carried = carriedRewards(prev);
+  const sameOwner = carried.rewardsOwner?.toLowerCase() === owner.toLowerCase();
+  const base: RewardState = sameOwner
+    ? carried
+    : { rewardsOwner: owner, rewardsScannedBlock: null, rewardsAlerted: [] };
+
+  const fromBlock = base.rewardsScannedBlock
+    ? BigInt(base.rewardsScannedBlock) + 1n
+    : resolveRewardsFromBlock(ctx.chain, currentBlock);
+  if (fromBlock > currentBlock) return { alerts: [], state: base };
+
+  try {
+    const credits = await scanRewardCredits(ctx.logsClient, ctx.addresses.coordinator, owner, fromBlock, currentBlock);
+    const alreadyAlerted = new Set(base.rewardsAlerted);
+    const fresh = credits.filter((c) => !alreadyAlerted.has(c.e3Id.toString()));
+    const pending = await fetchPendingRewards(ctx.client, ctx.addresses.coordinator, owner, fresh);
+    const { alerts, alerted } = newRewardAlerts(pending, base.rewardsAlerted, owner, ctx.chain, ctx.addresses.coordinator);
+    return {
+      alerts,
+      state: { rewardsOwner: owner, rewardsScannedBlock: currentBlock.toString(), rewardsAlerted: alerted },
+    };
+  } catch (err) {
+    console.error('[watch] reward check failed (will retry next tick):', err instanceof Error ? err.message : err);
+    return { alerts: [], state: base };
+  }
 }
 
 function formatAlert(a: Alert): string {
@@ -146,6 +224,8 @@ export async function runWatch(options: WatchCommandOptions): Promise<void> {
     rpcUrl: options.rpcUrl,
     chain: options.chain,
     operator: options.operator,
+    bondOwner: options.bondOwner,
+    logsRpcUrl: options.logsRpcUrl,
     pollIntervalSeconds: options.interval ? Number(options.interval) : undefined,
     releaseCheckMinutes: options.releaseCheckInterval ? Number(options.releaseCheckInterval) : undefined,
   });
@@ -154,6 +234,12 @@ export async function runWatch(options: WatchCommandOptions): Promise<void> {
   const addresses = CONTRACT_ADDRESSES[config.chain];
   const client = createClient(config.rpcUrl, config.chain);
   const statePath = options.state ?? 'state.json';
+  const rewardCtx: RewardCheckContext = {
+    client,
+    logsClient: config.logsRpcUrl === config.rpcUrl ? client : createClient(config.logsRpcUrl, config.chain),
+    addresses,
+    chain: config.chain,
+  };
 
   let running = true;
   const stop = (): void => {
@@ -241,6 +327,15 @@ export async function runWatch(options: WatchCommandOptions): Promise<void> {
       const releaseCheck = await maybeCheckRelease(prev, config.releaseCheckMinutes);
       alerts.push(...releaseCheck.alerts);
 
+      // Rewards go to the bond owner, not the operator key.
+      let rewards = carriedRewards(prev);
+      const rewardOwner = config.bondOwnerAddress ?? report.operator.bondOwner;
+      if (options.rewards !== false && rewardOwner && rewardOwner !== ZERO_ADDRESS) {
+        const rewardCheck = await checkRewards(rewardCtx, prev, rewardOwner, currentBlock);
+        alerts.push(...rewardCheck.alerts);
+        rewards = rewardCheck.state;
+      }
+
       await emit(alerts, { botToken: config.telegramBotToken, chatId: config.telegramChatId });
       await saveState(
         statePath,
@@ -254,6 +349,7 @@ export async function runWatch(options: WatchCommandOptions): Promise<void> {
           localLastCheckedAt,
           localLastProblem,
           peerVerdict,
+          rewards,
         }),
       );
     } catch (err) {
@@ -278,6 +374,10 @@ export async function runWatch(options: WatchCommandOptions): Promise<void> {
         releaseLatestTag: prev?.releaseLatestTag ?? null,
         releaseLastAlertedVersion: prev?.releaseLastAlertedVersion ?? null,
         releaseLastCheckedAt: prev?.releaseLastCheckedAt ?? null,
+        localLastCheckedAt: prev?.localLastCheckedAt ?? null,
+        localLastProblem: prev?.localLastProblem ?? null,
+        peerVerdict: prev?.peerVerdict ?? null,
+        ...carriedRewards(prev),
       });
     }
 
